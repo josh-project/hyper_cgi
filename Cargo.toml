@@ -9,10 +9,10 @@ description = "Run CGI scripts with hyper"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-futures = "*"
-tokio = {version = "*", features = ["full"] }
+futures = "0.3.5"
+tokio = {version = "0.2.22", features = ["full"] }
 tokio-util = { version = "0.3.1", features=["compat"] }
-hyper = "*"
+hyper = "0.13"
 
 [lib]
 name = "hyper_cgi"
