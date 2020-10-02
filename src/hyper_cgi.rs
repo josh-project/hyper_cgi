@@ -38,7 +38,7 @@ pub async fn do_cgi(
                 .get(hyper::header::CONTENT_TYPE)
                 .map(|x| x.to_str().ok())
                 .flatten()
-                .unwrap_or(""),
+                .unwrap_or_default(),
         )
         .env(
             "HTTP_CONTENT_ENCODING",
@@ -46,7 +46,7 @@ pub async fn do_cgi(
                 .get(hyper::header::CONTENT_ENCODING)
                 .map(|x| x.to_str().ok())
                 .flatten()
-                .unwrap_or(""),
+                .unwrap_or_default(),
         )
         .env(
             "CONTENT_LENGTH",
@@ -54,13 +54,25 @@ pub async fn do_cgi(
                 .get(hyper::header::CONTENT_LENGTH)
                 .map(|x| x.to_str().ok())
                 .flatten()
-                .unwrap_or(""),
+                .unwrap_or_default(),
         );
 
-    let mut child = cmd.spawn().expect("can't spawn CGI command");
-    let mut stdin = child.stdin.as_mut().expect("Failed to open stdin");
-    let mut stdout = child.stdout.as_mut().expect("Failed to open stdout");
-    let mut stderr = child.stderr.as_mut().expect("Failed to open stderr");
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(_e) => return (error_response(), std::vec::Vec::from("Unable to spawn child command")),
+    };
+    let mut stdin = match child.stdin.as_mut() {
+        Some(i) => i,
+        None => return (error_response(), std::vec::Vec::from("Unable to open stdin")),
+    };
+    let mut stdout = match child.stdout.as_mut() {
+        Some(o) => o,
+        None => return (error_response(), std::vec::Vec::from("Unable to open stdout")),
+    };
+    let mut stderr = match child.stderr.as_mut() {
+        Some(e) => e,
+        None => return (error_response(), std::vec::Vec::from("Unable to open stderr")),
+    };
 
     let req_body = req
         .into_body()
@@ -74,27 +86,16 @@ pub async fn do_cgi(
 
     let res = tokio::try_join!(
         async {
-            println!("copy");
             tokio::io::copy(&mut req_body, &mut stdin).await?;
-            println!("copy done");
             stdin.shutdown().await?;
-            println!("done");
             Ok(())
         },
-        {
-        //tokio::io::copy(&mut stdout, &mut tokio::io::stdout()).await;
-            println!("build response");
-
         build_response(&mut stdout, &mut stderr, &mut err_output)
-        }
     );
 
     let (_, r2) = res.unwrap_or((
         (),
-        Response::builder()
-            .status(hyper::StatusCode::INTERNAL_SERVER_ERROR)
-            .body(hyper::Body::empty())
-            .unwrap(),
+        error_response(),
     ));
 
     (r2, err_output)
@@ -102,6 +103,13 @@ pub async fn do_cgi(
 
 fn to_tokio_async_read(r: impl futures::io::AsyncRead) -> impl tokio::io::AsyncRead {
     tokio_util::compat::FuturesAsyncReadCompatExt::compat(r)
+}
+
+fn error_response() -> hyper::Response<hyper::Body> {
+    Response::builder()
+        .status(hyper::StatusCode::INTERNAL_SERVER_ERROR)
+        .body(hyper::Body::empty())
+        .unwrap()
 }
 
 async fn build_response(
