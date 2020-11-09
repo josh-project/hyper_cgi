@@ -59,19 +59,39 @@ pub async fn do_cgi(
 
     let mut child = match cmd.spawn() {
         Ok(c) => c,
-        Err(_e) => return (error_response(), std::vec::Vec::from("Unable to spawn child command")),
+        Err(_e) => {
+            return (
+                error_response(),
+                std::vec::Vec::from("Unable to spawn child command"),
+            )
+        }
     };
     let mut stdin = match child.stdin.as_mut() {
         Some(i) => i,
-        None => return (error_response(), std::vec::Vec::from("Unable to open stdin")),
+        None => {
+            return (
+                error_response(),
+                std::vec::Vec::from("Unable to open stdin"),
+            )
+        }
     };
     let mut stdout = match child.stdout.as_mut() {
         Some(o) => o,
-        None => return (error_response(), std::vec::Vec::from("Unable to open stdout")),
+        None => {
+            return (
+                error_response(),
+                std::vec::Vec::from("Unable to open stdout"),
+            )
+        }
     };
     let mut stderr = match child.stderr.as_mut() {
         Some(e) => e,
-        None => return (error_response(), std::vec::Vec::from("Unable to open stderr")),
+        None => {
+            return (
+                error_response(),
+                std::vec::Vec::from("Unable to open stderr"),
+            )
+        }
     };
 
     let req_body = req
@@ -84,21 +104,13 @@ pub async fn do_cgi(
     let mut req_body = to_tokio_async_read(req_body);
     let mut err_output = vec![];
 
-    let res = tokio::try_join!(
-        async {
-            tokio::io::copy(&mut req_body, &mut stdin).await?;
-            stdin.shutdown().await?;
-            Ok(())
-        },
-        build_response(&mut stdout, &mut stderr, &mut err_output)
-    );
+    tokio::io::copy(&mut req_body, &mut stdin).await;
 
-    let (_, r2) = res.unwrap_or((
-        (),
-        error_response(),
-    ));
+    if let Ok(response) = build_response(&mut stdout, &mut stderr, &mut err_output).await {
+        return (response, err_output);
+    }
 
-    (r2, err_output)
+    return (error_response(), err_output);
 }
 
 fn to_tokio_async_read(r: impl futures::io::AsyncRead) -> impl tokio::io::AsyncRead {
@@ -144,10 +156,10 @@ async fn build_response(
         line = String::new();
     }
 
-    stderr.read_to_end(err_output).await.unwrap_or(0);
-
     let mut data = vec![];
-    stdout.read_to_end(&mut data).await.unwrap_or(0);
+    let read_stderr = async { stderr.read_to_end(err_output).await };
+    let read_stdout = async { stdout.read_to_end(&mut data).await };
+    tokio::try_join!(read_stderr, read_stdout);
 
     let body = response.body(hyper::Body::from(data));
 
@@ -192,7 +204,9 @@ mod tests {
             .try_fold(String::new(), |mut acc, elt| async move {
                 acc.push_str(std::str::from_utf8(&elt).unwrap());
                 Ok(acc)
-            }).await.unwrap();
+            })
+            .await
+            .unwrap();
         assert_eq!("", std::str::from_utf8(&stderr).unwrap());
         assert_eq!(body_content, output);
     }

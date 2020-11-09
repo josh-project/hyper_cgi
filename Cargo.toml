@@ -1,6 +1,6 @@
 [package]
 name = "hyper_cgi"
-version = "0.2.0"
+version = "0.1.3"
 authors = ["Christian Schilling <christian.schilling@esrlabs.com>", "Louis-Marie Givel <louis-marie.givel@esrlabs.com>"]
 edition = "2018"
 license-file = "LICENSE"
@@ -12,10 +12,21 @@ readme = "README.md"
 
 [dependencies]
 futures = "0.3"
-tokio = {version = "0.3", features = ["full"] }
-tokio-util = { version = "0.4", features=["compat"] }
+tokio = {version = "0.2", features = ["full"] }
+tokio-util = { version = "0.3", features=["compat"] }
 hyper = "0.13"
+
+clap = {version = "2", optional = true }
+base64 = {version = "*", optional = true }
+lazy_static = {version = "1.4", optional = true}
 
 [lib]
 name = "hyper_cgi"
 path = "src/hyper_cgi.rs"
+
+[features]
+test-server = ["clap", "base64", "lazy_static"]
+
+[[bin]]
+name = "hyper-cgi-test-server"
+required-features = ["test-server"]
