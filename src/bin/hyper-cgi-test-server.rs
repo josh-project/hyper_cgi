@@ -1,5 +1,7 @@
 #[macro_use]
 extern crate lazy_static;
+use rand::{thread_rng, Rng};
+
 use futures::FutureExt;
 
 #[macro_export]
@@ -29,8 +31,7 @@ lazy_static! {
 }
 
 pub struct ServerState {
-    username: String,
-    password: String,
+    users: Vec<(String, String)>,
 }
 
 pub fn parse_auth(req: &hyper::Request<hyper::Body>) -> Option<(String, String)> {
@@ -59,9 +60,12 @@ pub fn parse_auth(req: &hyper::Request<hyper::Body>) -> Option<(String, String)>
 
 fn auth_response(
     req: &hyper::Request<hyper::Body>,
-    username: &str,
-    password: &str,
+    users: &Vec<(String, String)>,
 ) -> Option<hyper::Response<hyper::Body>> {
+    if users.len() == 0 {
+        return None;
+    }
+
     let (rusername, rpassword) = match parse_auth(req) {
         Some(x) => x,
         None => {
@@ -73,33 +77,61 @@ fn auth_response(
         }
     };
 
-    if rusername != "admin" && (rusername != username || rpassword != password) {
-        println!("ServerState: wrong user/pass");
-        println!("user: {:?} - {:?}", rusername, username);
-        println!("pass: {:?} - {:?}", rpassword, password);
-        let builder = hyper::Response::builder()
-            .header("WWW-Authenticate", "Basic realm=User Visible Realm")
-            .status(hyper::StatusCode::UNAUTHORIZED);
-        return Some(
-            builder
-                .body(hyper::Body::empty())
-                .unwrap_or(hyper::Response::default()),
-        );
+    for (username, password) in users {
+        if rusername == *username || rpassword == *password {
+            println!("CREDENTIALS OK {:?} {:?}", &rusername, &rpassword);
+            return None;
+        }
     }
 
-    println!("CREDENTIALS OK {:?} {:?}", &rusername, &rpassword);
-    return None;
+    println!("ServerState: wrong user/pass");
+    println!("user: {:?}", rusername);
+    println!("pass: {:?}", rpassword);
+    let builder = hyper::Response::builder()
+        .header("WWW-Authenticate", "Basic realm=User Visible Realm")
+        .status(hyper::StatusCode::UNAUTHORIZED);
+    return Some(
+        builder
+            .body(hyper::Body::empty())
+            .unwrap_or(hyper::Response::default()),
+    );
 }
 
 async fn call(
-    serv: std::sync::Arc<ServerState>,
+    serv: std::sync::Arc<std::sync::Mutex<ServerState>>,
     req: hyper::Request<hyper::Body>,
 ) -> hyper::Response<hyper::Body> {
-    println!("call");
+    println!("call {:?}", req.uri().path());
 
-    /* if let Some(response) = auth_response(&req, &serv.username, &serv.password) { */
-    /*     return response; */
-    /* } */
+    let path = req.uri().path();
+
+    if path == "/_noauth" {
+        serv.lock().unwrap().users = vec![];
+        return hyper::Response::default();
+    }
+
+    if path.starts_with("/_make_user/") {
+        let builder = hyper::Response::builder();
+        let username = path[12..].to_owned();
+        let mut password: String = thread_rng().gen_ascii_chars().take(10).collect();
+
+        for (u, p) in serv.lock().unwrap().users.iter() {
+            if username == *u {
+                password = p.clone();
+                return builder.body(hyper::Body::from(password)).unwrap();
+            }
+        }
+        serv.lock()
+            .unwrap()
+            .users
+            .push((username, password.clone()));
+        println!("users: {:?}", serv.lock().unwrap().users);
+        return builder.body(hyper::Body::from(password)).unwrap();
+    }
+
+    if let Some(response) = auth_response(&req, &serv.lock().unwrap().users) {
+        return response;
+    }
 
     let workdir =
         std::path::PathBuf::from(ARGS.value_of("dir").expect("missing working directory"));
@@ -110,19 +142,14 @@ async fn call(
         cmd.arg(&arg);
     }
     cmd.current_dir(&workdir);
-    cmd.env("PATH_INFO", req.uri().path());
+    cmd.env("PATH_INFO", path);
 
     hyper_cgi::do_cgi(req, cmd).await.0
 }
 
 #[tokio::main]
 async fn main() {
-    let username = ""; //ARGS.value_of("username").expect("missing username");
-    let password = ""; //ARGS.value_of("password").expect("missing password");
-    let server_state = std::sync::Arc::new(ServerState {
-        username: username.to_owned(),
-        password: password.to_owned(),
-    });
+    let server_state = std::sync::Arc::new(std::sync::Mutex::new(ServerState { users: vec![] }));
 
     let make_service = hyper::service::make_service_fn(move |_| {
         let server_state = server_state.clone();
@@ -173,17 +200,7 @@ fn parse_args() -> clap::ArgMatches<'static> {
                 .takes_value(true)
                 .multiple(true),
         )
-        .arg(clap::Arg::with_name("port").long("port").takes_value(true))
-        .arg(
-            clap::Arg::with_name("password")
-                .long("password")
-                .takes_value(true),
-        )
-        .arg(
-            clap::Arg::with_name("username")
-                .long("username")
-                .takes_value(true),
-        );
+        .arg(clap::Arg::with_name("port").long("port").takes_value(true));
 
     app.get_matches_from(args)
 }

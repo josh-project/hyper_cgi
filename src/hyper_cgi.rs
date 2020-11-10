@@ -5,7 +5,6 @@ use std::process::Stdio;
 use std::str::FromStr;
 use tokio::io::AsyncBufReadExt;
 use tokio::io::AsyncReadExt;
-use tokio::io::AsyncWriteExt;
 use tokio::io::BufReader;
 use tokio::process::Command;
 use tokio::stream::StreamExt;
@@ -18,6 +17,96 @@ pub async fn do_cgi(
     cmd: Command,
 ) -> (hyper::http::Response<hyper::Body>, Vec<u8>) {
     let mut cmd = cmd;
+    setup_cmd(&mut cmd, &req);
+
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(_e) => {
+            return (
+                error_response(),
+                std::vec::Vec::from("Unable to spawn child command"),
+            )
+        }
+    };
+    let mut stdin = match child.stdin.as_mut() {
+        Some(i) => i,
+        None => {
+            return (
+                error_response(),
+                std::vec::Vec::from("Unable to open stdin"),
+            )
+        }
+    };
+    let stdout = match child.stdout.as_mut() {
+        Some(o) => o,
+        None => {
+            return (
+                error_response(),
+                std::vec::Vec::from("Unable to open stdout"),
+            )
+        }
+    };
+    let stderr = match child.stderr.as_mut() {
+        Some(e) => e,
+        None => {
+            return (
+                error_response(),
+                std::vec::Vec::from("Unable to open stderr"),
+            )
+        }
+    };
+
+    let req_body = req
+        .into_body()
+        .map(|result| {
+            result.map_err(|_error| std::io::Error::new(std::io::ErrorKind::Other, "Error!"))
+        })
+        .into_async_read();
+
+    let mut req_body = to_tokio_async_read(req_body);
+    let mut err_output = vec![];
+
+    let mut stdout = BufReader::new(stdout);
+
+    let mut data = vec![];
+    let write_stdin = async { tokio::io::copy(&mut req_body, &mut stdin).await };
+    let read_stderr = async { stderr.read_to_end(&mut err_output).await };
+    let read_stdout = async {
+        let mut response = Response::builder();
+        let mut line = String::new();
+        while stdout.read_line(&mut line).await.unwrap_or(0) > 0 {
+            line = line
+                .trim_end_matches("\n")
+                .trim_end_matches("\r")
+                .to_owned();
+
+            let l: Vec<&str> = line.splitn(2, ": ").collect();
+            if l.len() < 2 {
+                break;
+            }
+            if l[0] == "Status" {
+                response = response.status(
+                    hyper::StatusCode::from_u16(
+                        u16::from_str(l[1].split(" ").next().unwrap_or("500")).unwrap_or(500),
+                    )
+                    .unwrap_or(hyper::StatusCode::INTERNAL_SERVER_ERROR),
+                );
+            } else {
+                response = response.header(l[0], l[1]);
+            }
+            line = String::new();
+        }
+        stdout.read_to_end(&mut data).await?;
+        convert_error_io_hyper(response.body(hyper::Body::from(data)))
+    };
+    if let Ok((_, _, response)) = tokio::try_join!(write_stdin, read_stderr, read_stdout) {
+        return (response, err_output);
+    }
+
+    return (error_response(), err_output);
+}
+
+fn setup_cmd(cmd: &mut Command, req: &Request<hyper::Body>) {
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
     cmd.stdin(Stdio::piped());
@@ -56,61 +145,6 @@ pub async fn do_cgi(
                 .flatten()
                 .unwrap_or_default(),
         );
-
-    let mut child = match cmd.spawn() {
-        Ok(c) => c,
-        Err(_e) => {
-            return (
-                error_response(),
-                std::vec::Vec::from("Unable to spawn child command"),
-            )
-        }
-    };
-    let mut stdin = match child.stdin.as_mut() {
-        Some(i) => i,
-        None => {
-            return (
-                error_response(),
-                std::vec::Vec::from("Unable to open stdin"),
-            )
-        }
-    };
-    let mut stdout = match child.stdout.as_mut() {
-        Some(o) => o,
-        None => {
-            return (
-                error_response(),
-                std::vec::Vec::from("Unable to open stdout"),
-            )
-        }
-    };
-    let mut stderr = match child.stderr.as_mut() {
-        Some(e) => e,
-        None => {
-            return (
-                error_response(),
-                std::vec::Vec::from("Unable to open stderr"),
-            )
-        }
-    };
-
-    let req_body = req
-        .into_body()
-        .map(|result| {
-            result.map_err(|_error| std::io::Error::new(std::io::ErrorKind::Other, "Error!"))
-        })
-        .into_async_read();
-
-    let mut req_body = to_tokio_async_read(req_body);
-    let mut err_output = vec![];
-
-    tokio::io::copy(&mut req_body, &mut stdin).await;
-
-    if let Ok(response) = build_response(&mut stdout, &mut stderr, &mut err_output).await {
-        return (response, err_output);
-    }
-
-    return (error_response(), err_output);
 }
 
 fn to_tokio_async_read(r: impl futures::io::AsyncRead) -> impl tokio::io::AsyncRead {
@@ -124,47 +158,6 @@ fn error_response() -> hyper::Response<hyper::Body> {
         .unwrap()
 }
 
-async fn build_response(
-    stdout: &mut &mut tokio::process::ChildStdout,
-    stderr: &mut &mut tokio::process::ChildStderr,
-    err_output: &mut Vec<u8>,
-) -> Result<Response<hyper::Body>, std::io::Error> {
-    let mut response = Response::builder();
-
-    let mut stdout = BufReader::new(stdout);
-    let mut line = String::new();
-    while stdout.read_line(&mut line).await.unwrap_or(0) > 0 {
-        line = line
-            .trim_end_matches("\n")
-            .trim_end_matches("\r")
-            .to_owned();
-
-        let l: Vec<&str> = line.splitn(2, ": ").collect();
-        if l.len() < 2 {
-            break;
-        }
-        if l[0] == "Status" {
-            response = response.status(
-                hyper::StatusCode::from_u16(
-                    u16::from_str(l[1].split(" ").next().unwrap_or("500")).unwrap_or(500),
-                )
-                .unwrap_or(hyper::StatusCode::INTERNAL_SERVER_ERROR),
-            );
-        } else {
-            response = response.header(l[0], l[1]);
-        }
-        line = String::new();
-    }
-
-    let mut data = vec![];
-    let read_stderr = async { stderr.read_to_end(err_output).await };
-    let read_stdout = async { stdout.read_to_end(&mut data).await };
-    tokio::try_join!(read_stderr, read_stdout);
-
-    let body = response.body(hyper::Body::from(data));
-
-    convert_error_io_hyper(body)
-}
 
 fn convert_error_io_hyper<T>(res: Result<T, hyper::http::Error>) -> Result<T, std::io::Error> {
     match res {
