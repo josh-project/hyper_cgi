@@ -78,7 +78,7 @@ fn auth_response(
     };
 
     for (username, password) in users {
-        if rusername == *username || rpassword == *password {
+        if rusername == *username && rpassword == *password {
             println!("CREDENTIALS OK {:?} {:?}", &rusername, &rpassword);
             return None;
         }
