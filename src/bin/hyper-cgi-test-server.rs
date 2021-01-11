@@ -1,8 +1,12 @@
 #[macro_use]
 extern crate lazy_static;
-use rand::{thread_rng, Rng};
+use core::iter;
+use core::str::from_utf8;
+use rand::{distributions::Alphanumeric, thread_rng, Rng};
 
 use futures::FutureExt;
+
+use hyper::server::Server;
 
 #[macro_export]
 macro_rules! some_or {
@@ -113,7 +117,11 @@ async fn call(
     if path.starts_with("/_make_user/") {
         let builder = hyper::Response::builder();
         let username = path[12..].to_owned();
-        let mut password: String = thread_rng().gen_ascii_chars().take(10).collect();
+        let password = iter::repeat(())
+            .map(|()| thread_rng().sample(Alphanumeric))
+            .take(10)
+            .collect::<Vec<u8>>();
+        let mut password:String = from_utf8(&password).unwrap().to_string();
 
         for (u, p) in serv.lock().unwrap().users.iter() {
             if username == *u {
@@ -169,7 +177,7 @@ async fn main() {
     )
     .parse()
     .unwrap();
-    let server = hyper::Server::bind(&addr).serve(make_service);
+    let server = Server::bind(&addr).serve(make_service);
     println!("Now listening on {}", addr);
 
     if let Err(e) = server.await {

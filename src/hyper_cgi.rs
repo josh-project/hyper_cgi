@@ -1,4 +1,5 @@
 //! This module implements a do_cgi function, to run CGI scripts with hyper
+use futures::stream::StreamExt;
 use futures::TryStreamExt;
 use hyper::{Request, Response};
 use std::process::Stdio;
@@ -7,7 +8,6 @@ use tokio::io::AsyncBufReadExt;
 use tokio::io::AsyncReadExt;
 use tokio::io::BufReader;
 use tokio::process::Command;
-use tokio::stream::StreamExt;
 
 /// do_cgi is an async function that takes an hyper request and a CGI compatible
 /// command, and passes the request to be executed to the command.
@@ -157,7 +157,6 @@ fn error_response() -> hyper::Response<hyper::Body> {
         .body(hyper::Body::empty())
         .unwrap()
 }
-
 
 fn convert_error_io_hyper<T>(res: Result<T, hyper::http::Error>) -> Result<T, std::io::Error> {
     match res {
