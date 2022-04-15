@@ -1,6 +1,6 @@
 [package]
 name = "hyper_cgi"
-version = "0.2.1"
+version = "22.4.15"
 authors = ["Christian Schilling <initcrash@gmail.com>", "Louis-Marie Givel <louis-marie.givel@esrlabs.com>"]
 edition = "2018"
 license-file = "LICENSE"
